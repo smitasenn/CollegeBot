@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local development settings
+.env
+.env.*
+
+# Compiled python bytecode
+*.pyc
+
+# Dependency directories
+myenv/
+/myenv
+myenv/
+env/
+env37/
+.idea/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
