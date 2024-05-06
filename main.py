@@ -2,7 +2,7 @@ import nltk
 from nltk.tokenize import sent_tokenize
 from fastapi import FastAPI
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, util
 import numpy as np
 from fastapi.middleware.cors import CORSMiddleware
 import json
@@ -24,9 +24,9 @@ client = pymongo.MongoClient(MONGODB_URL)
 db = client[DB_NAME]
 user_collection = db[USER_COLLECTION]
 
-
+#tokenizer
 nltk.download('punkt')
-
+#web based framework for server
 app = FastAPI()
 
 app.add_middleware(
@@ -38,15 +38,22 @@ app.add_middleware(
 )
 
 model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+question_model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
 
 summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
 
 with open("academics.json", "r") as file:
     data = json.load(file) 
 
+#def encode_and_compute_similarity(sentence1, sentence2):
+#   embeddings = model.encode([sentence1, sentence2])
+#    return np.dot(embeddings[0], embeddings[1]) / (np.linalg.norm(embeddings[0]) * np.linalg.norm(embeddings[1]))
+
 def encode_and_compute_similarity(sentence1, sentence2):
-    embeddings = model.encode([sentence1, sentence2])
-    return np.dot(embeddings[0], embeddings[1]) / (np.linalg.norm(embeddings[0]) * np.linalg.norm(embeddings[1]))
+    embeddings1 = model.encode(sentence1)
+    embeddings2 = model.encode(sentence2)
+    return util.pytorch_cos_sim(embeddings1, embeddings2).item()
+
 
 def merge_and_rephrase(similar_answers):
     merged_answer = " ".join(similar_answers)
@@ -54,14 +61,24 @@ def merge_and_rephrase(similar_answers):
     rephrased_answer = ". ".join([sentence.capitalize() for sentence in sentences])
     return rephrased_answer
 
+
+
+#def get_similar_question_and_answer(question):
+#    similarities = [(q, encode_and_compute_similarity(question, q)) for q in data.keys()]
+#    max_similarities = sorted(similarities, key=lambda x: x[1], reverse=True)[:1]
+#    similar_questions = [sim[0] for sim in max_similarities]
+#    similar_answers = [data[q] for q in similar_questions]
+    
+#    return similar_questions, similar_answers
+
+
 def get_similar_question_and_answer(question):
     similarities = [(q, encode_and_compute_similarity(question, q)) for q in data.keys()]
-    max_similarities = sorted(similarities, key=lambda x: x[1], reverse=True)[:1]
-    similar_questions = [sim[0] for sim in max_similarities]
-    similar_answers = [data[q] for q in similar_questions]
-    
-    return similar_questions, similar_answers
-
+    max_similarity = max(similarities, key=lambda x: x[1])
+    similar_question, similarity_score = max_similarity
+    if similarity_score < 0.6:  # Adjust the threshold as needed
+        return None, None  # No similar question found
+    return similar_question, data[similar_question]
 
 class UserSignup(BaseModel):
     email: str
@@ -81,15 +98,34 @@ class Feedback(BaseModel):
     email: str
     difficulty: str
 
+#@app.post("/get_answer/")
+#async def get_answer(question: Question):
+#    similar_questions, similar_answers = get_similar_question_and_answer(question.question)
+#    merged_and_rephrased_answer = merge_and_rephrase(similar_answers)
+#    loop = asyncio.get_event_loop()
+#    summary_task = loop.run_in_executor(None, summarizer, merged_and_rephrased_answer, 130, 30, False)
+#    summary = await summary_task
+#    summarized_text = summary[0]['summary_text']
+#    return {"similar_questions": similar_questions, "merged_and_rephrased_answer": merged_and_rephrased_answer, "answer": merged_and_rephrased_answer}
+
+
 @app.post("/get_answer/")
 async def get_answer(question: Question):
-    similar_questions, similar_answers = get_similar_question_and_answer(question.question)
-    merged_and_rephrased_answer = merge_and_rephrase(similar_answers)
-    loop = asyncio.get_event_loop()
-    summary_task = loop.run_in_executor(None, summarizer, merged_and_rephrased_answer, 130, 30, False)
-    summary = await summary_task
-    summarized_text = summary[0]['summary_text']
-    return {"similar_questions": similar_questions, "merged_and_rephrased_answer": merged_and_rephrased_answer, "answer": summarized_text}
+    similar_question, similar_answers = get_similar_question_and_answer(question.question)
+
+    if similar_question is not None:
+        merged_and_rephrased_answer = merge_and_rephrase([similar_answers])
+        summary = summarizer(merged_and_rephrased_answer, max_length=130, min_length=30, do_sample=False)
+        summarized_text = summary[0]['summary_text']
+        return {
+            "similar_questions": [similar_question],
+            "merged_and_rephrased_answer": merged_and_rephrased_answer,
+            "answer": merged_and_rephrased_answer,
+            
+        }
+    else:
+        return {"answer": "Sorry, I don't have much information about that. Please provide more details."}
+
 
 @app.post("/signup/")
 async def signup(user: UserSignup):
